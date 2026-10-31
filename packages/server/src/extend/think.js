@@ -183,7 +183,11 @@ module.exports = {
     let destUrl = path;
 
     if (destUrl && notEmptyQueryStr) {
-      destUrl += destUrl.includes('?') ? '&' : '?';
+      const hashIndex = destUrl.indexOf('#');
+      const hash = hashIndex === -1 ? '' : destUrl.slice(hashIndex);
+      const base = hashIndex === -1 ? destUrl : destUrl.slice(0, hashIndex);
+
+      return base + (base.includes('?') ? '&' : '?') + notEmptyQueryStr + hash;
     }
 
     if (notEmptyQueryStr) {

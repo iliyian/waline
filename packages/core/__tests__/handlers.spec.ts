@@ -617,7 +617,7 @@ describe('user handler', () => {
         password: 'pw',
         display_name: 'Safe',
         'bad field': 'ignored',
-      } as unknown as { email: string; password: string },
+      },
       context(),
     );
     expect(whitelisted.Users.rows[0]).not.toHaveProperty('bad field');

@@ -1,3 +1,4 @@
+/* oxlint-disable vitest/max-expects, vitest/require-to-throw-message */
 import { createRequire } from 'node:module';
 
 import { describe, expect, it } from 'vitest';

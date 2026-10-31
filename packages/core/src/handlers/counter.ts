@@ -1,16 +1,24 @@
 import { badRequest } from '../error.js';
 import type { WalineContext } from '../types.js';
 import type { CoreRuntime } from '../utils/runtime.js';
-import { requiredString } from '../utils/validation.js';
+import {
+  counterType,
+  optionalString,
+  optionalStringArray,
+  requiredString,
+} from '../utils/validation.js';
 
 export const createCounterHandler = ({ models, now }: CoreRuntime) => ({
   async get(input: { path?: string | string[]; type?: string | string[] }, ctx: WalineContext) {
-    const paths = typeof input.path === 'string' ? input.path.split(',') : (input.path ?? []);
+    const paths =
+      typeof input.path === 'string'
+        ? input.path.split(',')
+        : optionalStringArray(input.path, 'path');
     const types =
       typeof input.type === 'string'
-        ? input.type.split(',')
+        ? input.type.split(',').map((type) => counterType(type))
         : input.type?.length
-          ? input.type
+          ? optionalStringArray(input.type, 'type').map((type) => counterType(type))
           : ['time'];
 
     if (!paths.length) return 0;
@@ -35,8 +43,8 @@ export const createCounterHandler = ({ models, now }: CoreRuntime) => ({
     ctx: WalineContext,
   ) {
     const path = requiredString(input.path, 'path');
-    const type = input.type ?? 'time';
-    const action = input.action ?? 'inc';
+    const type = counterType(input.type);
+    const action = optionalString(input.action, 'action', 10) ?? 'inc';
 
     if (!['inc', 'desc'].includes(action)) badRequest({ field: 'action' });
 

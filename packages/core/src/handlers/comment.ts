@@ -3,7 +3,63 @@ import type { GroupedCount, WalineComment, WalineContext, WalineUser, Where } fr
 import { currentUser, isAdmin, requireAdmin, requireUser } from '../utils/auth.js';
 import { createCommentFormatter } from '../utils/comment.js';
 import type { CoreRuntime } from '../utils/runtime.js';
-import { levelFor, positiveInt, requiredString } from '../utils/validation.js';
+import {
+  levelFor,
+  optionalId,
+  optionalString,
+  optionalStringArray,
+  positiveInt,
+  requiredString,
+} from '../utils/validation.js';
+
+const normalizeCommentUpdate = (input: Record<string, unknown>): Partial<WalineComment> => {
+  const data: Record<string, unknown> = {};
+  const stringFields: [string, number][] = [
+    ['comment', 65_535],
+    ['url', 255],
+    ['mail', 255],
+    ['nick', 255],
+    ['link', 255],
+    ['ua', 2048],
+    ['ip', 255],
+    ['status', 50],
+  ];
+
+  for (const [field, maxLength] of stringFields) {
+    const value = optionalString(input[field], field, maxLength);
+    if (value !== undefined) data[field] = value;
+  }
+
+  for (const field of ['pid', 'rid', 'user_id']) {
+    const value = optionalId(input[field], field);
+    if (value !== undefined) data[field] = value;
+  }
+
+  if (input.sticky !== undefined && input.sticky !== null) {
+    if (!['boolean', 'number', 'string'].includes(typeof input.sticky)) {
+      badRequest({ field: 'sticky', rule: 'scalar' });
+    }
+    data.sticky = input.sticky;
+  }
+
+  if (input.like !== undefined && input.like !== null) {
+    if (typeof input.like !== 'number' && typeof input.like !== 'boolean') {
+      badRequest({ field: 'like', rule: 'number' });
+    }
+    data.like = input.like;
+  }
+
+  for (const field of ['insertedAt', 'createdAt', 'updatedAt']) {
+    const value = input[field];
+    if (value === undefined || value === null) continue;
+    if (typeof value !== 'string' && !(value instanceof Date)) {
+      badRequest({ field, rule: 'date' });
+    }
+    data[field] = value;
+  }
+
+  return data;
+};
 
 export const createCommentHandler = (runtime: CoreRuntime) => {
   const { config, hook, logger, models, now, random, services } = runtime;
@@ -166,13 +222,16 @@ export const createCommentHandler = (runtime: CoreRuntime) => {
       const current = requireAdmin(ctx);
       const page = positiveInt(input.page, 1);
       const pageSize = positiveInt(input.pageSize, 10, 100);
+      const owner = optionalString(input.owner, 'owner', 20);
+      const status = optionalString(input.status, 'status', 50);
+      const keyword = optionalString(input.keyword, 'keyword', 255);
       const where: Where<WalineComment> = {};
 
-      if (input.owner === 'mine') where.mail = current.email;
-      if (input.status) {
-        where.status = input.status === 'approved' ? ['NOT IN', ['waiting', 'spam']] : input.status;
+      if (owner === 'mine') where.mail = current.email;
+      if (status) {
+        where.status = status === 'approved' ? ['NOT IN', ['waiting', 'spam']] : status;
       }
-      if (input.keyword) where.comment = ['LIKE', `%${input.keyword}%`];
+      if (keyword) where.comment = ['LIKE', `%${keyword}%`];
 
       const [count, spamCount, waitingCount, rows] = await Promise.all([
         models.Comment.count(where) as Promise<number>,
@@ -196,7 +255,11 @@ export const createCommentHandler = (runtime: CoreRuntime) => {
     },
 
     async count(input: { url?: string | string[] }, ctx: WalineContext) {
-      const urls = Array.isArray(input.url) ? input.url : input.url ? [input.url] : [];
+      const urls = Array.isArray(input.url)
+        ? optionalStringArray(input.url, 'url')
+        : input.url
+          ? [requiredString(input.url, 'url')]
+          : [];
       const where: Where<WalineComment> = urls.length ? { url: ['IN', urls] } : {};
       const current = currentUser(ctx);
 
@@ -237,6 +300,7 @@ export const createCommentHandler = (runtime: CoreRuntime) => {
     ) {
       const rawComment = requiredString(input.comment, 'comment');
       const url = requiredString(input.url, 'url');
+      const at = optionalString(input.at, 'at', 255);
       const current = currentUser(ctx);
 
       if (!current && config.forceLogin) unauthorized();
@@ -246,12 +310,12 @@ export const createCommentHandler = (runtime: CoreRuntime) => {
 
       const data: Partial<WalineComment> = {
         comment: rawComment,
-        link: input.link,
-        mail: input.mail,
-        nick: input.nick,
-        pid: input.pid,
-        rid: input.rid,
-        ua: input.ua,
+        link: optionalString(input.link, 'link', 255),
+        mail: optionalString(input.mail, 'mail', 255),
+        nick: optionalString(input.nick, 'nick', 255),
+        pid: optionalId(input.pid, 'pid'),
+        rid: optionalId(input.rid, 'rid'),
+        ua: optionalString(input.ua, 'ua', 2048),
         url,
         ip: ctx.ip,
         insertedAt: now(),
@@ -259,7 +323,7 @@ export const createCommentHandler = (runtime: CoreRuntime) => {
       };
 
       if (data.pid && ctx.state.deprecated) {
-        data.comment = `[@${input.at ?? ''}](#${data.pid}): ${data.comment}`;
+        data.comment = `[@${at ?? ''}](#${data.pid}): ${data.comment}`;
       }
 
       if (isAdmin(ctx)) {
@@ -349,6 +413,13 @@ export const createCommentHandler = (runtime: CoreRuntime) => {
       const [old] = await models.Comment.select({ objectId: id });
 
       if (!old) return;
+      if (
+        input.data.like !== undefined &&
+        typeof input.data.like !== 'number' &&
+        typeof input.data.like !== 'boolean'
+      ) {
+        badRequest({ field: 'like', rule: 'number' });
+      }
       const isLikeOnly =
         typeof input.data.like === 'boolean' && Object.keys(input.data).length === 1;
       const current = currentUser(ctx);
@@ -358,10 +429,12 @@ export const createCommentHandler = (runtime: CoreRuntime) => {
         if (!isAdmin(ctx) && old.user_id !== user.objectId) forbidden();
       }
 
-      //@ts-expect-error: like type can be boolean or number
       const data: Partial<WalineComment> = isAdmin(ctx)
-        ? { ...input.data }
-        : { comment: input.data.comment, like: input.data.like as number };
+        ? normalizeCommentUpdate(input.data)
+        : {
+            comment: optionalString(input.data.comment, 'comment', 65_535),
+            like: input.data.like as number,
+          };
 
       if (typeof input.data.like === 'boolean') {
         data.like = Math.max(

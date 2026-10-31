@@ -3,7 +3,13 @@ import type { GroupedCount, WalineContext, WalineUser } from '../types.js';
 import { isAdmin, requireAdmin, requireUser } from '../utils/auth.js';
 import { createAvatarFormatter } from '../utils/avatar.js';
 import type { CoreRuntime } from '../utils/runtime.js';
-import { levelFor, positiveInt, requiredCapability, requiredString } from '../utils/validation.js';
+import {
+  levelFor,
+  optionalString,
+  positiveInt,
+  requiredCapability,
+  requiredString,
+} from '../utils/validation.js';
 
 export const createUserHandler = (runtime: CoreRuntime) => {
   const { config, models, services } = runtime;
@@ -89,6 +95,7 @@ export const createUserHandler = (runtime: CoreRuntime) => {
       ctx: WalineContext,
     ) {
       const email = requiredString(input.email, 'email');
+      const password = requiredString(input.password, 'password');
       const passwordService = requiredCapability(services.password, 'password');
       const existing = await models.Users.select({ email });
 
@@ -98,10 +105,15 @@ export const createUserHandler = (runtime: CoreRuntime) => {
 
       const count = (await models.Users.count()) as number;
       const data: Partial<WalineUser> = {
-        ...input,
-        password: await passwordService.hash(input.password),
+        email,
+        password: await passwordService.hash(password),
         type: count === 0 ? 'administrator' : (config.normalUserType ?? 'guest'),
       };
+
+      for (const field of ['display_name', 'url', 'avatar', 'label']) {
+        const value = optionalString(input[field], field, 255);
+        if (value !== undefined) (data as Record<string, unknown>)[field] = value;
+      }
       const saved = existing.length
         ? (await models.Users.update(data, { email }))[0]
         : await models.Users.add(data);
@@ -161,15 +173,17 @@ export const createUserHandler = (runtime: CoreRuntime) => {
 
     async remove(input: { objectId: string }, ctx: WalineContext) {
       const user = requireAdmin(ctx);
-      if (user.objectId === input.objectId) forbidden();
+      const objectId = requiredString(input.objectId, 'objectId');
 
-      const [target] = await models.Users.select({ objectId: input.objectId });
+      if (user.objectId === objectId) forbidden();
+
+      const [target] = await models.Users.select({ objectId });
       if (!target) throw new WalineError('USER_NOT_EXIST', 400);
 
       if (target.type.startsWith('verify:')) {
-        await models.Users.delete({ objectId: input.objectId });
+        await models.Users.delete({ objectId });
       } else {
-        await models.Users.update({ type: 'banned' }, { objectId: input.objectId });
+        await models.Users.update({ type: 'banned' }, { objectId });
       }
     },
   };

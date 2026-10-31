@@ -1,4 +1,5 @@
 const Base = require('./base.js');
+const { assertSafeData, assertSafeWhereKey, assertSafeWhereValue } = require('./guard.js');
 const { normalizeOrder, toSqlOrder } = require('./order.js');
 
 module.exports = class extends Base {
@@ -22,12 +23,18 @@ module.exports = class extends Base {
     }
 
     for (const k in filter) {
+      assertSafeWhereKey(k);
+
       if (k === 'objectId' || k === 'objectid') {
+        assertSafeWhereValue(filter[k], k);
         where.id = filter[k];
         continue;
       }
 
       if (k === '_complex') {
+        if (filter[k] === null || typeof filter[k] !== 'object' || Array.isArray(filter[k])) {
+          throw new Error('INVALID_MODEL_INPUT: invalid complex condition');
+        }
         where[k] = this.parseWhere(filter[k]);
         continue;
       }
@@ -38,7 +45,7 @@ module.exports = class extends Base {
       }
 
       if (Array.isArray(filter[k])) {
-        if (filter[k][0] === 'IN' && filter[k][1].length === 0) {
+        if (filter[k][0] === 'IN' && Array.isArray(filter[k][1]) && filter[k][1].length === 0) {
           continue;
         }
 
@@ -47,6 +54,7 @@ module.exports = class extends Base {
         }
       }
 
+      assertSafeWhereValue(filter[k], k);
       where[k] = filter[k];
     }
 
@@ -92,6 +100,8 @@ module.exports = class extends Base {
   }
 
   async add(data) {
+    assertSafeData(data);
+
     if (data.objectId) {
       data.id = data.objectId;
       delete data.objectId;
@@ -113,6 +123,8 @@ module.exports = class extends Base {
     return Promise.all(
       list.map(async (item) => {
         const updateData = typeof data === 'function' ? data(item) : data;
+
+        assertSafeData(updateData);
 
         await this.model(this.tableName).where({ id: item.id }).update(updateData);
 

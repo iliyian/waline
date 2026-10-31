@@ -3,7 +3,7 @@ import type { WalineContext } from '../types.js';
 import { currentUser, requireUser } from '../utils/auth.js';
 import { createAvatarFormatter } from '../utils/avatar.js';
 import type { CoreRuntime } from '../utils/runtime.js';
-import { requiredCapability, requiredString } from '../utils/validation.js';
+import { optionalString, requiredCapability, requiredString } from '../utils/validation.js';
 
 export const createAuthHandler = (runtime: CoreRuntime) => {
   const { models, services } = runtime;
@@ -82,7 +82,8 @@ export const createAuthHandler = (runtime: CoreRuntime) => {
     async getTwoFactorStatus(input: { email?: string }, ctx: WalineContext) {
       if (!currentUser(ctx) && !input.email) unauthorized();
 
-      const email = input.email ?? currentUser(ctx)?.email;
+      const email =
+        input.email === undefined ? currentUser(ctx)?.email : requiredString(input.email, 'email');
       const [account] = await models.Users.select({ email });
 
       return { enable: Boolean(account?.['2fa']) };
@@ -105,12 +106,14 @@ export const createAuthHandler = (runtime: CoreRuntime) => {
     async enableTwoFactor(input: { secret: string; code: string }, ctx: WalineContext) {
       const user = requireUser(ctx);
       const twoFactor = requiredCapability(services.twoFactor, 'twoFactor');
+      const secret = optionalString(input.secret, 'secret', 64);
+      const code = optionalString(input.code, 'code', 16);
 
-      if (!(await twoFactor.verify(input.secret, input.code))) {
+      if (!secret || !code || !(await twoFactor.verify(secret, code))) {
         throw new WalineError('TWO_FACTOR_AUTH_ERROR', 400, 'TWO_FACTOR_AUTH_ERROR_DETAIL');
       }
 
-      await models.Users.update({ '2fa': input.secret }, { objectId: user.objectId });
+      await models.Users.update({ '2fa': secret }, { objectId: user.objectId });
     },
 
     async requestPasswordReset(input: { email: string }, ctx: WalineContext) {

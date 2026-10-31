@@ -18,7 +18,11 @@ import { currentUser, isAdmin, requireAdmin, requireUser } from '../src/utils/au
 import { createAvatarFormatter } from '../src/utils/avatar.js';
 import { createCommentFormatter } from '../src/utils/comment.js';
 import {
+  counterType,
   levelFor,
+  optionalId,
+  optionalString,
+  optionalStringArray,
   positiveInt,
   requiredCapability,
   requiredString,
@@ -208,6 +212,21 @@ describe('core utilities', () => {
   it('covers validation and authorization helpers', () => {
     expect(requiredString('ok', 'name')).toBe('ok');
     expect(() => requiredString('', 'name')).toThrow();
+    expect(optionalString('ok', 'name')).toBe('ok');
+    expect(optionalString(undefined, 'name')).toBeUndefined();
+    expect(() => optionalString(['ok'], 'name')).toThrow();
+    expect(() => optionalString('x'.repeat(256), 'name')).toThrow();
+    expect(optionalId(3, 'pid')).toBe('3');
+    expect(optionalId('4', 'pid')).toBe('4');
+    expect(() => optionalId('1 OR 1=1', 'pid')).toThrow();
+    expect(() => optionalId([1], 'pid')).toThrow();
+    expect(optionalStringArray(['/a', '/b'], 'url')).toStrictEqual(['/a', '/b']);
+    expect(optionalStringArray(undefined, 'url')).toStrictEqual([]);
+    expect(() => optionalStringArray([['exp', 'x']], 'url')).toThrow();
+    expect(counterType('reaction2')).toBe('reaction2');
+    expect(counterType(undefined)).toBe('time');
+    expect(() => counterType(['exp', 'x'])).toThrow();
+    expect(() => counterType('url; drop table wl_users')).toThrow();
     expect(positiveInt(undefined, 3)).toBe(3);
     expect(positiveInt(2, 1, 3)).toBe(2);
     expect(() => positiveInt(0, 1)).toThrow();
@@ -280,6 +299,15 @@ describe('counter handler', () => {
   it('covers reads, creation, increments and decrements', async () => {
     const { core } = setup();
     await expect(core.counter.get({}, context())).resolves.toBe(0);
+    await expect(
+      core.counter.get({ path: [['exp', '= (SELECT 1)']] as unknown as string[] }, context()),
+    ).rejects.toMatchObject({ status: 400 });
+    await expect(
+      core.counter.update(
+        { path: '/a', type: ['exp', '= (SELECT 1)'] as unknown as string },
+        context(),
+      ),
+    ).rejects.toMatchObject({ status: 400 });
     await expect(
       core.counter.get({ path: ['/a'], type: ['time', 'like'] }, context()),
     ).resolves.toStrictEqual([{ time: 0, like: 0 }]);
@@ -369,6 +397,12 @@ describe('auth handler', () => {
     });
     await expect(core.auth.getTwoFactorStatus({}, context())).rejects.toThrow();
     await expect(
+      core.auth.getTwoFactorStatus(
+        { email: [['exp', '= (SELECT 1)']] as unknown as string },
+        context(),
+      ),
+    ).rejects.toMatchObject({ status: 400 });
+    await expect(
       core.auth.createTwoFactorSecret({}, context({ ...administrator, '2fa': 'x'.repeat(32) })),
     ).resolves.toMatchObject({ secret: 'x'.repeat(32) });
     await expect(core.auth.createTwoFactorSecret({}, context(guest))).resolves.toStrictEqual({
@@ -378,6 +412,12 @@ describe('auth handler', () => {
     await expect(
       core.auth.enableTwoFactor({ secret: 's', code: 'bad' }, context(guest)),
     ).rejects.toThrow();
+    await expect(
+      core.auth.enableTwoFactor(
+        { secret: [['exp', '= (SELECT 1)']] as unknown as string, code: '123456' },
+        context(guest),
+      ),
+    ).rejects.toMatchObject({ status: 400 });
     await core.auth.enableTwoFactor({ secret: 's', code: '123456' }, context(guest));
     expect(account['2fa']).toBe('s');
     await expect(core.auth.requestPasswordReset({ email: 'none' }, context())).rejects.toThrow();
@@ -408,6 +448,9 @@ describe('verification, oauth and database handlers', () => {
 
   it('covers oauth linking, login and account creation', async () => {
     const env = setup();
+    await expect(
+      env.core.oauth.authorize({ code: 'c', type: 'github) OR 1=1' }, context()),
+    ).rejects.toMatchObject({ status: 400 });
     env.services.oauth.authorize.mockResolvedValueOnce({} as any);
     await expect(
       env.core.oauth.authorize({ code: 'c', type: 'github' }, context()),
@@ -556,6 +599,29 @@ describe('user handler', () => {
     );
     expect(result).toStrictEqual({ verify: true });
     expect(env.services.notification.verification).toHaveBeenCalled();
+    const injected = setup();
+    await expect(
+      injected.core.user.register(
+        {
+          email: 'evil@example.com',
+          password: 'pw',
+          display_name: [['exp', '= (SELECT 1)']],
+        } as unknown as { email: string; password: string },
+        context(),
+      ),
+    ).rejects.toMatchObject({ status: 400 });
+    const whitelisted = setup();
+    await whitelisted.core.user.register(
+      {
+        email: 'safe@example.com',
+        password: 'pw',
+        display_name: 'Safe',
+        'bad field': 'ignored',
+      } as unknown as { email: string; password: string },
+      context(),
+    );
+    expect(whitelisted.Users.rows[0]).not.toHaveProperty('bad field');
+    expect(whitelisted.Users.rows[0].display_name).toBe('Safe');
     const fresh = setup();
     await expect(
       fresh.core.user.register({ email: 'first@example.com', password: 'pw' }, context()),
@@ -748,6 +814,9 @@ describe('comment handler', () => {
     await expect(
       env.core.comment.count({ url: ['/post', '/missing'] }, context()),
     ).resolves.toStrictEqual([2, 0]);
+    await expect(
+      env.core.comment.count({ url: [['exp', '= (SELECT 1)']] as unknown as string[] }, context()),
+    ).rejects.toMatchObject({ status: 400 });
     await expect(env.core.comment.count({ url: '/post' }, context(guest))).resolves.toStrictEqual([
       3,
     ]);
@@ -757,6 +826,19 @@ describe('comment handler', () => {
     const env = setup();
     env.Users.rows.push({ ...guest }, { ...administrator });
     await expect(env.core.comment.create({ comment: '', url: '/' }, context())).rejects.toThrow();
+    const injected = setup();
+    await expect(
+      injected.core.comment.create(
+        {
+          comment: 'x',
+          url: '/',
+          mail: [['exp', '= (SELECT 1)']] as unknown as string,
+        },
+        context(),
+      ),
+    ).rejects.toMatchObject({ status: 400 });
+    expect(injected.Comment.select).not.toHaveBeenCalled();
+    expect(injected.Comment.add).not.toHaveBeenCalled();
     const forced = setup({ config: { forceLogin: true } });
     await expect(
       forced.core.comment.create({ comment: 'x', url: '/' }, context()),
